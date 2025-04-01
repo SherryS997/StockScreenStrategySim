@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ dashboard_title }}</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+            color: #333;
+        }
+        .container {
+            max-width: 1600px;
+            margin: auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1, h2, h3 {
+            color: #0056b3;
+            border-bottom: 2px solid #dee2e6;
+            padding-bottom: 10px;
+            margin-top: 30px;
+        }
+        h1 { font-size: 2.2em; text-align: center; border-bottom: none; margin-bottom: 20px;}
+        h2 { font-size: 1.8em; }
+        h3 { font-size: 1.4em; color: #17a2b8; border-bottom-style: dashed; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 30px;
+            font-size: 0.9em;
+        }
+        th, td {
+            border: 1px solid #dee2e6;
+            padding: 10px 12px;
+            text-align: left;
+            vertical-align: top; /* Align content top */
+        }
+        th {
+            background-color: #e9ecef;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+        tr:hover {
+            background-color: #e2e6ea;
+        }
+        .summary-box {
+            background-color: #e9f7fd;
+            border-left: 5px solid #17a2b8;
+            padding: 15px 20px;
+            margin-bottom: 25px;
+            border-radius: 4px;
+        }
+        .summary-box p { margin: 5px 0; }
+        .summary-box strong { color: #0056b3; }
+        .plot-container {
+            text-align: center; /* Center Plotly charts */
+            margin-bottom: 30px;
+            padding: 15px;
+            border: 1px solid #eee;
+            border-radius: 5px;
+            background: #fff;
+        }
+        .equity-plot img {
+            max-width: 300px; /* Control plot size */
+            height: auto;
+            display: block; /* Remove extra space below image */
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .no-plot {
+            color: #888;
+            font-style: italic;
+            font-size: 0.9em;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            font-size: 0.85em;
+            color: #6c757d;
+        }
+        .positive { color: #28a745; }
+        .negative { color: #dc3545; }
+        .neutral { color: #6c757d; }
+        .highlight { background-color: #fff3cd; font-weight: bold; }
+        .strategy-list {
+            font-size: 0.85em;
+            margin: 5px 0 0 0;
+            padding-left: 15px;
+            list-style-type: none; /* Remove default bullets */
+            padding: 0;
+        }
+        .strategy-list li { margin-bottom: 3px; }
+        .strategy-name { font-style: italic; color: #555; }
+        .strategy-value { margin-left: 5px; }
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+        }
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 250px;
+            background-color: #555;
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 5px 10px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%; /* Position the tooltip above the text */
+            left: 50%;
+            margin-left: -125px; /* Use half of the width to center */
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 0.8em;
+            font-weight: normal;
+        }
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        /* Responsive tables */
+        .table-responsive {
+             overflow-x: auto;
+             -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
+             margin-bottom: 1rem;
+         }
+
+        /* Column visibility for smaller screens - adjust breakpoints as needed */
+        @media (max-width: 1200px) {
+            .hide-lg { display: none !important; }
+        }
+        @media (max-width: 992px) {
+            .hide-md { display: none !important; }
+            .equity-plot img { max-width: 200px; }
+        }
+         @media (max-width: 768px) {
+            .hide-sm { display: none !important; }
+             body { padding: 10px;}
+             .container { padding: 15px;}
+             h1 { font-size: 1.8em; }
+             h2 { font-size: 1.5em; }
+             th, td { padding: 6px 8px; font-size: 0.85em;}
+             .equity-plot img { max-width: 150px; }
+         }
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>{{ dashboard_title }}</h1>
+        <p style="text-align: center; font-size: 0.9em; color: #666;">Generated on: {{ generation_time }} from {{ source_csv }}</p>
+
+        <div class="summary-box">
+            <h2>Summary & Parameters</h2>
+            <p><strong>Ranking Metric:</strong> {{ ranking_metric }}</p>
+            <p><strong>Simulation Period:</strong> {{ date_range }}</p>
+            <p><strong>Stocks Analyzed:</strong> {{ total_stocks_analyzed }}</p>
+            <p><strong>Strategies Tested per Stock:</strong> {{ strategies_count }}</p>
+            <p><strong>Minimum Avg Trades Filter:</strong> {{ min_avg_trades }}</p>
+            <p><strong>Benchmark:</strong> {{ benchmark_ticker }}
+                {% if benchmark_perf %}
+                    (Return: <span class="{{ 'positive' if benchmark_perf.total_return_pct > 0 else 'negative' if benchmark_perf.total_return_pct < 0 else 'neutral' }}">{{ benchmark_perf.total_return_pct | round(2) }}%</span>,
+                     Max DD: <span class="negative">{{ benchmark_perf.max_drawdown_pct | round(2) }}%</span>,
+                     Sharpe: <span class="{{ 'positive' if benchmark_perf.sharpe_ratio > 0.5 else 'negative' if benchmark_perf.sharpe_ratio < -0.5 else 'neutral' }}">{{ benchmark_perf.sharpe_ratio | round(2) }}</span>)
+                {% else %}
+                    <span class="neutral">(Not available)</span>
+                {% endif %}
+            </p>
+        </div>
+
+        <h2>Overall Top {{ top_n_overall_limit }} Stocks</h2>
+        {% if top_overall_stocks %}
+        <div class="table-responsive">
+            <table id="table-overall-top">
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>Ticker</th>
+                        <th>Price</th>
+                        <th>Score <span class="tooltip">(?)<span class="tooltiptext">Based on {{ ranking_metric }}</span></span></th>
+                        <th>Avg Strat Return %</th>
+                        <th class="hide-md">Avg Strat Max DD %</th>
+                        <th class="hide-md">Avg Strat Sharpe</th>
+                        <th class="hide-lg">Strat +% <span class="tooltip">(?)<span class="tooltiptext">% of Profitable Strategies</span></span></th>
+                        <th class="hide-lg">Avg Trades/Strat</th>
+                        <th>Equity Plot (Avg Strategy vs B&H vs Benchmark)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stock in top_overall_stocks %}
+                    <tr>
+                        <td>{{ stock.rank }}</td>
+                        <td class="highlight">{{ stock.ticker }}</td>
+                        <td>{{ "%.2f"|format(stock.last_price) }}</td>
+                        <td class="highlight">{{ "%.2f"|format(stock.score) }}</td>
+                        <td><span class="{{ 'positive' if stock.avg_strat_return_pct > 0 else 'negative' if stock.avg_strat_return_pct < 0 else 'neutral' }}">{{ "%.2f"|format(stock.avg_strat_return_pct) }}</span></td>
+                        <td class="hide-md"><span class="negative">{{ "%.2f"|format(stock.avg_strat_max_drawdown_pct) }}</span></td>
+                        <td class="hide-md"><span class="{{ 'positive' if stock.avg_strat_sharpe > 0.5 else 'negative' if stock.avg_strat_sharpe < -0.5 else 'neutral' }}">{{ "%.2f"|format(stock.avg_strat_sharpe) }}</span></td>
+                        <td class="hide-lg">{{ "%.1f"|format(stock.positive_strat_ratio * 100) }}%</td>
+                        <td class="hide-lg">{{ "%.1f"|format(stock.avg_trades_per_strat) }}</td>
+                        <td class="equity-plot">
+                            {% if stock.equity_plot_base64 %}
+                                <img src="{{ stock.equity_plot_base64 }}" alt="Equity Plot for {{ stock.ticker }}">
+                            {% elif stock.rank <= PLOT_TOP_N %}
+                                <span class="no-plot">(Plot not found)</span>
+                            {% else %}
+                                <span class="no-plot">(Plot not generated)</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p>No overall top stocks data available.</p>
+        {% endif %}
+
+
+        <h2>Recommendations by Price Category</h2>
+        {% for category in categories %}
+            <h3>{{ category.name }} (Top {{ category.limit }})</h3>
+            {% if category.stocks %}
+            <div class="table-responsive">
+                <table id="{{ category.table_id }}">
+                    <thead>
+                         <tr>
+                            <th>Rank</th>
+                            <th>Ticker</th>
+                            <th>Price</th>
+                            <th>Score <span class="tooltip">(?)<span class="tooltiptext">Based on {{ ranking_metric }}</span></span></th>
+                            <th>Avg Strat Return %</th>
+                            <th class="hide-sm">Avg Strat Max DD %</th>
+                            <th class="hide-md">Avg Strat Sharpe</th>
+                            <th class="hide-lg">B&H Return %</th>
+                            <th>Strat +% <span class="tooltip">(?)<span class="tooltiptext">% of Profitable Strategies</span></span></th>
+                            <th class="hide-md">Avg Trades/Strat</th>
+                            <th class="hide-sm">Top/Worst Strategies</th>
+                            <th>Equity Plot</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for stock in category.stocks %}
+                        <tr>
+                            <td>{{ stock.rank }}</td>
+                            <td class="highlight">{{ stock.ticker }}</td>
+                            <td>{{ "%.2f"|format(stock.last_price) }}</td>
+                            <td class="highlight">{{ "%.2f"|format(stock.score) }}</td>
+                            <td><span class="{{ 'positive' if stock.avg_strat_return_pct > 0 else 'negative' if stock.avg_strat_return_pct < 0 else 'neutral' }}">{{ "%.2f"|format(stock.avg_strat_return_pct) }}</span></td>
+                            <td class="hide-sm"><span class="negative">{{ "%.2f"|format(stock.avg_strat_max_drawdown_pct) }}</span></td>
+                            <td class="hide-md"><span class="{{ 'positive' if stock.avg_strat_sharpe > 0.5 else 'negative' if stock.avg_strat_sharpe < -0.5 else 'neutral' }}">{{ "%.2f"|format(stock.avg_strat_sharpe) }}</span></td>
+                             <td class="hide-lg"><span class="{{ 'positive' if stock.bh_return_pct > 0 else 'negative' if stock.bh_return_pct < 0 else 'neutral' }}">{{ "%.2f"|format(stock.bh_return_pct) }}</span></td>
+                            <td>{{ "%.1f"|format(stock.positive_strat_ratio * 100) }}%</td>
+                            <td class="hide-md">{{ "%.1f"|format(stock.avg_trades_per_strat) }}</td>
+                            <td class="hide-sm">
+                                {% if stock.top_strategies_list %}
+                                <strong>Top:</strong>
+                                <ul class="strategy-list">
+                                    {% for strat in stock.top_strategies_list %}
+                                        <li><span class="strategy-name">{{ strat.name }}</span>: <span class="strategy-value positive">{{ "%.1f"|format(strat.value) }}%</span></li>
+                                    {% endfor %}
+                                </ul>
+                                {% endif %}
+                                 {% if stock.worst_strategies_list %}
+                                <strong>Worst:</strong>
+                                <ul class="strategy-list">
+                                    {% for strat in stock.worst_strategies_list %}
+                                         <li><span class="strategy-name">{{ strat.name }}</span>: <span class="strategy-value negative">{{ "%.1f"|format(strat.value) }}%</span></li>
+                                    {% endfor %}
+                                </ul>
+                                {% endif %}
+                            </td>
+                             <td class="equity-plot">
+                                {% if stock.equity_plot_base64 %}
+                                    <img src="{{ stock.equity_plot_base64 }}" alt="Equity Plot for {{ stock.ticker }}">
+                                {% elif stock.rank <= PLOT_TOP_N %}
+                                    <span class="no-plot">(Plot not found)</span>
+                                {% else %}
+                                     <span class="no-plot">(Plot not generated)</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+                <p>No stocks recommended in this category based on the criteria.</p>
+            {% endif %}
+        {% endfor %}
+
+        <h2>Analysis Charts</h2>
+        <div class="plot-container">
+            <h3>Score Distribution</h3>
+            {% if charts.score_distribution %}
+                {{ charts.score_distribution | safe }}
+            {% else %}
+                <p class="neutral">Score distribution chart could not be generated.</p>
+            {% endif %}
+        </div>
+         <div class="plot-container">
+            <h3>Top Stocks Comparison (by Score)</h3>
+             {% if charts.top_n_score %}
+                {{ charts.top_n_score | safe }}
+            {% else %}
+                <p class="neutral">Top N Score chart could not be generated.</p>
+            {% endif %}
+        </div>
+         <div class="plot-container">
+            <h3>Top Stocks Comparison (by Avg Strategy Return)</h3>
+            {% if charts.top_n_return %}
+                 {{ charts.top_n_return | safe }}
+            {% else %}
+                <p class="neutral">Top N Return chart could not be generated.</p>
+            {% endif %}
+        </div>
+         <div class="plot-container">
+            <h3>Risk vs. Return Scatter Plot</h3>
+            {% if charts.risk_return %}
+                 {{ charts.risk_return | safe }}
+            {% else %}
+                 <p class="neutral">Risk vs Return chart could not be generated.</p>
+            {% endif %}
+        </div>
+
+        <div class="footer">
+            <p><strong>Disclaimer:</strong> This report is generated based on historical backtest simulations. Past performance is not indicative of future results. This is NOT financial advice. Use these results for research and educational purposes ONLY. Always conduct your own due diligence before making any investment decisions.</p>
+        </div>
+    </div>
+</body>
+</html>
