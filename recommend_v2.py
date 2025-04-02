@@ -41,7 +41,7 @@ try:
         RECOMMEND_GENERATE_PLOTS, RECOMMEND_PLOT_TOP_N,
         RECOMMEND_STRATEGY_DETAIL_COUNT, RECOMMEND_MIN_AVG_TRADES,
         # --- New Cache Config ---
-        RECOMMEND_USE_SIMULATION_CACHE, RECOMMEND_SIM_CACHE_DIR
+        RECOMMEND_USE_SIMULATION_CACHE, RECOMMEND_SIM_CACHE_DIR, TOP_N_OVERALL,
     )
 except ImportError as e:
     print(f"Error importing configuration from control.py: {e}")
@@ -56,6 +56,7 @@ INITIAL_CASH = RECOMMEND_INITIAL_CASH
 MIN_HISTORY_DAYS = RECOMMEND_MIN_HISTORY_DAYS
 TOP_N_RECOMMEND = RECOMMEND_TOP_N
 TOP_N_PER_CATEGORY = RECOMMEND_TOP_N_PER_CATEGORY
+TOP_N_OVERALL = TOP_N_OVERALL
 NUM_CPUS = RECOMMEND_NUM_CPUS
 CACHE_EXPIRY_DAYS = RECOMMEND_CACHE_EXPIRY_DAYS
 COMMISSION_PCT = RECOMMEND_COMMISSION_PER_TRADE_PCT
@@ -111,7 +112,7 @@ logger.warning("="*80)
 try:
     # Import ALL desired functions explicitly
     from trading_strategies_v2 import (
-         rsi_strategy, bollinger_bands_strategy, momentum_strategy, mean_reversion_strategy,
+        rsi_strategy, bollinger_bands_strategy, momentum_strategy, mean_reversion_strategy,
         triple_moving_average_strategy, volume_price_trend_strategy, keltner_channel_strategy,
         dual_thrust_strategy, adaptive_momentum_strategy as adaptive_momentum_strategy_v2, # Renamed if needed
         hull_moving_average_strategy, elder_ray_strategy, chande_momentum_strategy, dema_strategy,
@@ -529,62 +530,207 @@ def run_simulation_parallel_cached(all_ticker_data, strategies, yf_cache_info):
     return final_results
 
 
-# --- Plotting Functions --- (Same as previous version)
 def plot_equity_curves(ticker, avg_strategy_values, bh_values, benchmark_values, filename):
-    plt.figure(figsize=(12, 7)); start_val = INITIAL_CASH
-    if avg_strategy_values is not None and not avg_strategy_values.empty: plt.plot(avg_strategy_values.index, avg_strategy_values, label=f'Avg Strategy ({ticker})', color='blue'); start_val = avg_strategy_values.iloc[0]
-    if bh_values is not None and not bh_values.empty: bh_normalized = (bh_values / bh_values.iloc[0]) * start_val if bh_values.iloc[0] > 0 else bh_values; plt.plot(bh_normalized.index, bh_normalized, label=f'Buy & Hold ({ticker})', color='green', linestyle='--'); start_val = bh_values.iloc[0] if start_val == INITIAL_CASH else start_val
-    if benchmark_values is not None and not benchmark_values.empty: benchmark_normalized = (benchmark_values / benchmark_values.iloc[0]) * start_val if benchmark_values.iloc[0] > 0 else benchmark_values; plt.plot(benchmark_normalized.index, benchmark_normalized, label=f'Benchmark ({BENCHMARK_TICKER})', color='red', linestyle=':')
-    plt.title(f'Equity Curve Comparison: {ticker} (Normalized Start)'); plt.xlabel('Date'); plt.ylabel('Portfolio Value'); plt.legend(); plt.grid(True); plt.tight_layout();
-    try: plt.savefig(filename)
-    except Exception as e: logger.error(f"Failed to save plot {filename}: {e}")
-    plt.close()
+    plt.figure(figsize=(12, 7))
+    start_val = INITIAL_CASH # Base normalization value
+
+    # Plot Average Strategy Performance (if valid)
+    plotted_avg = False
+    if avg_strategy_values is not None and not avg_strategy_values.empty and avg_strategy_values.iloc[0] > 0:
+        plt.plot(avg_strategy_values.index, avg_strategy_values, label=f'Avg Strategy ({ticker})', color='blue', linewidth=2)
+        start_val = avg_strategy_values.iloc[0] # Use actual start value for normalization if available
+        plotted_avg = True
+    elif avg_strategy_values is not None and not avg_strategy_values.empty:
+         # Plot even if starting value is zero or negative, maybe log a warning
+         plt.plot(avg_strategy_values.index, avg_strategy_values, label=f'Avg Strategy ({ticker})', color='blue', linewidth=2)
+         logger.warning(f"Plotting {ticker}: Avg Strategy has non-positive starting value.")
+         plotted_avg = True
+
+
+    # Plot Buy & Hold (Normalized to the same start as Avg Strategy or Initial Cash)
+    if bh_values is not None and not bh_values.empty and bh_values.iloc[0] > 0:
+        bh_normalized = (bh_values / bh_values.iloc[0]) * start_val
+        plt.plot(bh_normalized.index, bh_normalized, label=f'Buy & Hold ({ticker})', color='green', linestyle='--')
+    elif bh_values is not None and not bh_values.empty:
+         logger.warning(f"Plotting {ticker}: Buy & Hold has non-positive starting value, plotting raw.")
+         plt.plot(bh_values.index, bh_values, label=f'Buy & Hold ({ticker}) - Raw', color='green', linestyle='--')
+
+
+    # Plot Benchmark (Normalized to the same start)
+    if benchmark_values is not None and not benchmark_values.empty and benchmark_values.iloc[0] > 0:
+        benchmark_normalized = (benchmark_values / benchmark_values.iloc[0]) * start_val
+        plt.plot(benchmark_normalized.index, benchmark_normalized, label=f'Benchmark ({BENCHMARK_TICKER})', color='red', linestyle=':')
+    elif benchmark_values is not None and not benchmark_values.empty:
+        logger.warning(f"Plotting {ticker}: Benchmark has non-positive starting value, plotting raw.")
+        plt.plot(benchmark_values.index, benchmark_values, label=f'Benchmark ({BENCHMARK_TICKER}) - Raw', color='red', linestyle=':')
+
+    plt.title(f'Equity Curve Comparison: {ticker} (Normalized Start)')
+    plt.xlabel('Date')
+    plt.ylabel('Portfolio Value')
+    # Only add legend if at least one line was plotted successfully
+    if plotted_avg or (bh_values is not None and not bh_values.empty) or (benchmark_values is not None and not benchmark_values.empty):
+        plt.legend()
+    else:
+        logger.warning(f"No valid data series to plot for {ticker}.")
+        plt.close() # Close the empty figure
+        return # Don't save an empty plot
+
+    plt.grid(True)
+    plt.tight_layout()
+    try:
+        plt.savefig(filename)
+        logger.debug(f"Saved equity plot: {filename}") # More specific log
+    except Exception as e:
+        logger.error(f"Failed to save plot {filename} for ticker {ticker}: {e}")
+    plt.close() # Close the figure after saving
+
 
 def plot_score_distribution(scores, filename):
-    plt.figure(figsize=(10, 6)); plt.hist(scores, bins=20, color='skyblue', edgecolor='black'); plt.title('Distribution of Ranking Scores'); plt.xlabel('Score'); plt.ylabel('Frequency'); plt.grid(axis='y', alpha=0.75);
-    try: plt.savefig(filename)
-    except Exception as e: logger.error(f"Failed to save score distribution plot {filename}: {e}")
+    if not scores: # Check if list is empty
+        logger.warning("No scores available to plot distribution.")
+        return
+    plt.figure(figsize=(10, 6))
+    plt.hist(scores, bins=20, color='skyblue', edgecolor='black')
+    plt.title('Distribution of Ranking Scores')
+    plt.xlabel('Score')
+    plt.ylabel('Frequency')
+    plt.grid(axis='y', alpha=0.75)
+    try:
+        plt.savefig(filename)
+        logger.debug(f"Saved score distribution plot: {filename}")
+    except Exception as e:
+        logger.error(f"Failed to save score distribution plot {filename}: {e}")
     plt.close()
 
-# --- Analysis and Recommendation --- (Same as previous version)
 def analyze_and_recommend(simulation_results, buy_hold_results, benchmark_data):
-    logger.info("\n--- Analyzing Strategy Performance Across Tickers ---"); ticker_analysis = {}; benchmark_metrics = {}; benchmark_daily_values = None
-    if benchmark_data is not None:
-        benchmark_sim_start = pd.to_datetime(START_DATE); benchmark_sim_end = pd.to_datetime(END_DATE)
-        benchmark_relevant = benchmark_data[(benchmark_data.index >= benchmark_sim_start) & (benchmark_data.index <= benchmark_sim_end)]['close'].copy()
-        if not benchmark_relevant.empty:
-             benchmark_daily_values = (benchmark_relevant / benchmark_relevant.iloc[0]) * INITIAL_CASH; full_date_range = pd.date_range(start=benchmark_sim_start, end=benchmark_sim_end, freq='B'); benchmark_daily_values = benchmark_daily_values.reindex(full_date_range, method='ffill').fillna(INITIAL_CASH)
-             benchmark_metrics = calculate_performance_metrics(benchmark_daily_values); logger.info(f"Benchmark ({BENCHMARK_TICKER}) Metrics: Return={benchmark_metrics.get('total_return_pct', 0.0):.2f}%, MaxDD={benchmark_metrics.get('max_drawdown_pct', 0.0):.2f}%, Sharpe={benchmark_metrics.get('sharpe_ratio', 0.0):.2f}")
-        else: logger.warning(f"No benchmark data in period."); benchmark_metrics = {k: 0.0 for k in ['total_return_pct', 'max_drawdown_pct', 'sharpe_ratio', 'sortino_ratio', 'calmar_ratio']}
+    logger.info("\n--- Analyzing Strategy Performance Across Tickers ---")
+    ticker_analysis = {}
+    benchmark_metrics = {}
+    benchmark_daily_values = None # Initialize
+
+    # --- Benchmark Calculation (Keep as is) ---
+    if benchmark_data is not None and not benchmark_data.empty:
+        benchmark_sim_start = pd.to_datetime(START_DATE)
+        benchmark_sim_end = pd.to_datetime(END_DATE)
+        # Ensure benchmark index is DatetimeIndex
+        benchmark_data.index = pd.to_datetime(benchmark_data.index)
+
+        benchmark_relevant_data = benchmark_data[(benchmark_data.index >= benchmark_sim_start) & (benchmark_data.index <= benchmark_sim_end)].copy()
+
+        if not benchmark_relevant_data.empty and 'close' in benchmark_relevant_data.columns:
+             benchmark_relevant_close = benchmark_relevant_data['close'].dropna()
+             if not benchmark_relevant_close.empty and benchmark_relevant_close.iloc[0] > 0:
+                 benchmark_daily_values = (benchmark_relevant_close / benchmark_relevant_close.iloc[0]) * INITIAL_CASH
+                 full_date_range = pd.date_range(start=benchmark_sim_start, end=benchmark_sim_end, freq='B') # Use Business Day frequency
+                 # Reindex and forward fill to handle non-trading days
+                 benchmark_daily_values = benchmark_daily_values.reindex(full_date_range, method='ffill').fillna(method='ffill') # Fill initial NaNs too
+                 # Ensure it starts with INITIAL_CASH if the first day had no data after reindexing
+                 if pd.isna(benchmark_daily_values.iloc[0]):
+                     benchmark_daily_values.iloc[0] = INITIAL_CASH
+                     benchmark_daily_values = benchmark_daily_values.fillna(method='ffill') # Fill again if needed
+                 benchmark_metrics = calculate_performance_metrics(benchmark_daily_values)
+                 logger.info(f"Benchmark ({BENCHMARK_TICKER}) Metrics: Return={benchmark_metrics.get('total_return_pct', 0.0):.2f}%, MaxDD={benchmark_metrics.get('max_drawdown_pct', 0.0):.2f}%, Sharpe={benchmark_metrics.get('sharpe_ratio', 0.0):.2f}")
+             else:
+                 logger.warning(f"Benchmark data ({BENCHMARK_TICKER}) in period has no valid closing prices or starts at zero. Cannot calculate performance.")
+                 benchmark_metrics = {k: 0.0 for k in ['total_return_pct', 'max_drawdown_pct', 'sharpe_ratio', 'sortino_ratio', 'calmar_ratio']}
+        else:
+            logger.warning(f"No benchmark data ({BENCHMARK_TICKER}) in simulation period or 'close' column missing.")
+            benchmark_metrics = {k: 0.0 for k in ['total_return_pct', 'max_drawdown_pct', 'sharpe_ratio', 'sortino_ratio', 'calmar_ratio']}
+    else:
+         logger.warning(f"No benchmark data provided ({BENCHMARK_TICKER}). Skipping benchmark calculations.")
+         benchmark_metrics = {k: 0.0 for k in ['total_return_pct', 'max_drawdown_pct', 'sharpe_ratio', 'sortino_ratio', 'calmar_ratio']}
 
     for ticker, strategy_results in simulation_results.items():
         if not strategy_results: continue
         ticker_analysis[ticker] = {'strategy_pl_pct': {}, 'strategy_trades': {}, 'strategy_commissions': {}, 'all_daily_values': [], 'valid_strategy_count': 0, 'last_price': 0.0}
         for strategy_name, result_data in strategy_results.items():
-            portfolio = result_data['portfolio']; daily_values = result_data['daily_values']
-            if not daily_values.empty:
-                ticker_analysis[ticker]['strategy_pl_pct'][strategy_name] = portfolio.get('final_pl_pct', 0.0); ticker_analysis[ticker]['strategy_trades'][strategy_name] = portfolio.get('trades', 0); ticker_analysis[ticker]['strategy_commissions'][strategy_name] = portfolio.get('commission_paid', 0.0)
-                ticker_analysis[ticker]['all_daily_values'].append(daily_values); ticker_analysis[ticker]['valid_strategy_count'] += 1
-                if portfolio.get('last_price', 0.0) > 0: ticker_analysis[ticker]['last_price'] = portfolio.get('last_price')
+            portfolio = result_data['portfolio']
+            daily_values = result_data['daily_values']
+            if daily_values is not None and not daily_values.empty: # Check daily_values validity
+                ticker_analysis[ticker]['strategy_pl_pct'][strategy_name] = portfolio.get('final_pl_pct', 0.0)
+                ticker_analysis[ticker]['strategy_trades'][strategy_name] = portfolio.get('trades', 0)
+                ticker_analysis[ticker]['strategy_commissions'][strategy_name] = portfolio.get('commission_paid', 0.0)
+                ticker_analysis[ticker]['all_daily_values'].append(daily_values)
+                ticker_analysis[ticker]['valid_strategy_count'] += 1
+                # Use the last price from the portfolio dict if available and valid
+                last_sim_price = portfolio.get('last_price', 0.0)
+                if last_sim_price > 0:
+                     ticker_analysis[ticker]['last_price'] = last_sim_price
+                # Fallback: try getting last price from daily_values series if needed (less ideal)
+                elif not daily_values.empty and daily_values.iloc[-1] > 0 and ticker_analysis[ticker]['last_price'] <= 0:
+                     # This assumes daily_values reflects portfolio value, not price directly
+                     # We need the actual last price, which should be in the portfolio dict.
+                     # Keep the logic simple and rely on portfolio['last_price']
+                     pass
 
-    ranked_tickers = []; all_scores = []
+    ranked_tickers = []
+    all_scores = []
     for ticker, analysis in ticker_analysis.items():
-        if analysis['valid_strategy_count'] == 0 or analysis['last_price'] <= 0: logger.warning(f"Ticker {ticker} invalid results/price. Excluding."); continue
-        avg_daily_values = pd.concat(analysis['all_daily_values'], axis=1).mean(axis=1); avg_strategy_metrics = calculate_performance_metrics(avg_daily_values)
-        pl_values = list(analysis['strategy_pl_pct'].values()); avg_pl_pct = np.mean(pl_values) if pl_values else 0.0; pl_std_dev = np.std(pl_values) if len(pl_values) > 1 else 0.0
-        positive_strategies = sum(1 for pl in pl_values if pl > 0); positive_ratio = positive_strategies / analysis['valid_strategy_count'] if analysis['valid_strategy_count'] > 0 else 0.0
-        avg_trades = np.mean(list(analysis['strategy_trades'].values())) if analysis['strategy_trades'] else 0.0; avg_commission = np.mean(list(analysis['strategy_commissions'].values())) if analysis['strategy_commissions'] else 0.0
-        if avg_trades < MIN_AVG_TRADES_FILTER: logger.info(f"Filtering {ticker}, low avg trades ({avg_trades:.2f} < {MIN_AVG_TRADES_FILTER})."); continue
+        if analysis['valid_strategy_count'] == 0:
+             logger.warning(f"Ticker {ticker} had no valid strategy results. Excluding from ranking.")
+             continue
+        if analysis['last_price'] <= 0:
+             # Try to get last price from buy & hold data if available
+             if ticker in buy_hold_results and buy_hold_results[ticker] is not None and not buy_hold_results[ticker].empty:
+                 analysis['last_price'] = buy_hold_results[ticker].iloc[-1] / (INITIAL_CASH / buy_hold_results[ticker].iloc[0]) # Infer price
+                 if analysis['last_price'] <=0 :
+                      logger.warning(f"Ticker {ticker} has invalid last price (<=0) even after checking B&H. Excluding.")
+                      continue
+                 else:
+                      logger.info(f"Used B&H data to infer last price for {ticker}.")
+             else:
+                logger.warning(f"Ticker {ticker} has invalid last price (<=0) and no B&H data. Excluding.")
+                continue
 
+        # Calculate average daily values (ensure alignment and handle potential all-NaN columns)
+        avg_daily_values = None
+        if analysis['all_daily_values']:
+            try:
+                # Concatenate aligning indices, then calculate mean ignoring NaNs per row
+                combined_daily = pd.concat(analysis['all_daily_values'], axis=1, join='outer')
+                avg_daily_values = combined_daily.mean(axis=1, skipna=True)
+                # Forward fill any remaining NaNs after averaging (e.g., if all strategies had NaN on a day)
+                avg_daily_values = avg_daily_values.ffill()
+                # Ensure it starts correctly if the first day had issues
+                if pd.isna(avg_daily_values.iloc[0]): avg_daily_values.iloc[0] = INITIAL_CASH
+                avg_daily_values = avg_daily_values.ffill() # Fill again
+            except Exception as e:
+                logger.error(f"Error calculating average daily values for {ticker}: {e}", exc_info=True)
+                avg_daily_values = None # Fallback
+
+        avg_strategy_metrics = calculate_performance_metrics(avg_daily_values) if avg_daily_values is not None else {k: 0.0 for k in ['total_return_pct', 'max_drawdown_pct', 'sharpe_ratio', 'sortino_ratio', 'calmar_ratio']}
+
+        pl_values = list(analysis['strategy_pl_pct'].values())
+        avg_pl_pct = np.mean(pl_values) if pl_values else 0.0
+        pl_std_dev = np.std(pl_values) if len(pl_values) > 1 else 0.0
+        positive_strategies = sum(1 for pl in pl_values if pl > 0)
+        positive_ratio = positive_strategies / analysis['valid_strategy_count'] if analysis['valid_strategy_count'] > 0 else 0.0
+        avg_trades = np.mean(list(analysis['strategy_trades'].values())) if analysis['strategy_trades'] else 0.0
+        avg_commission = np.mean(list(analysis['strategy_commissions'].values())) if analysis['strategy_commissions'] else 0.0
+
+        if avg_trades < MIN_AVG_TRADES_FILTER:
+            logger.info(f"Filtering {ticker}, low avg trades ({avg_trades:.2f} < {MIN_AVG_TRADES_FILTER}).")
+            continue
+
+        # --- Ranking Score Calculation (Keep as is) ---
+        ranking_score = 0.0 # Default score
         if RANKING_METRIC == 'risk_adjusted_pl': ranking_score = avg_strategy_metrics['sharpe_ratio']
         elif RANKING_METRIC == 'sortino': ranking_score = avg_strategy_metrics['sortino_ratio']
         elif RANKING_METRIC == 'calmar': ranking_score = avg_strategy_metrics['calmar_ratio']
         elif RANKING_METRIC == 'weighted_pl': ranking_score = avg_pl_pct * positive_ratio
-        else: ranking_score = avg_strategy_metrics['total_return_pct']
+        else: ranking_score = avg_strategy_metrics['total_return_pct'] # Default to return
+        # Handle potential NaN/inf scores
+        if not np.isfinite(ranking_score):
+             logger.warning(f"Invalid ranking score ({ranking_score}) for {ticker}. Setting score to 0.")
+             ranking_score = 0.0
         all_scores.append(ranking_score)
 
-        sorted_strats = sorted(analysis['strategy_pl_pct'].items(), key=lambda item: item[1], reverse=True); top_strategies = sorted_strats[:STRATEGY_DETAIL_COUNT]; worst_strategies = sorted_strats[-STRATEGY_DETAIL_COUNT:]
-        bh_daily_values = buy_hold_results.get(ticker); bh_metrics = calculate_performance_metrics(bh_daily_values) if bh_daily_values is not None else {k: 0.0 for k in avg_strategy_metrics}
+        sorted_strats = sorted(analysis['strategy_pl_pct'].items(), key=lambda item: item[1], reverse=True)
+        top_strategies = sorted_strats[:STRATEGY_DETAIL_COUNT]
+        worst_strategies = sorted_strats[-STRATEGY_DETAIL_COUNT:]
+
+        bh_daily_values = buy_hold_results.get(ticker)
+        bh_metrics = calculate_performance_metrics(bh_daily_values) if bh_daily_values is not None else {k: 0.0 for k in avg_strategy_metrics}
 
         ranked_tickers.append({
             'ticker': ticker, 'score': ranking_score, 'last_price': analysis['last_price'], 'strategy_count': analysis['valid_strategy_count'],
@@ -592,58 +738,157 @@ def analyze_and_recommend(simulation_results, buy_hold_results, benchmark_data):
             'avg_strat_sharpe': avg_strategy_metrics['sharpe_ratio'], 'avg_strat_sortino': avg_strategy_metrics['sortino_ratio'], 'avg_strat_calmar': avg_strategy_metrics['calmar_ratio'],
             'avg_pl_pct_all': avg_pl_pct, 'pl_std_dev': pl_std_dev, 'positive_strat_ratio': positive_ratio, 'avg_trades_per_strat': avg_trades, 'avg_commission_per_strat': avg_commission,
             'bh_return_pct': bh_metrics['total_return_pct'], 'bh_max_drawdown_pct': bh_metrics['max_drawdown_pct'], 'bh_sharpe': bh_metrics['sharpe_ratio'],
-            'top_strategies': top_strategies, 'worst_strategies': worst_strategies, 'avg_daily_values': avg_daily_values, 'bh_daily_values': bh_daily_values
+            'top_strategies': top_strategies, 'worst_strategies': worst_strategies,
+            'avg_daily_values': avg_daily_values, # Keep the series for plotting
+            'bh_daily_values': bh_daily_values   # Keep the series for plotting
         })
 
     ranked_tickers.sort(key=lambda x: x['score'], reverse=True)
 
+    # --- Identify All Tickers Requiring Plots ---
+    tickers_to_plot = set()
+    if GENERATE_PLOTS and ranked_tickers:
+        # Add overall top N
+        for item in ranked_tickers[:TOP_N_OVERALL]: # Use overall top N config
+            tickers_to_plot.add(item['ticker'])
+
+        # Add top N from each category
+        temp_categories = {"Above_1000": [], "100_to_1000": [], "Below_100": []}
+        for item in ranked_tickers:
+            price = item['last_price']
+            category_name = "Above_1000" if price > 1000 else ("100_to_1000" if 100 <= price <= 1000 else "Below_100")
+            if len(temp_categories[category_name]) < TOP_N_PER_CATEGORY:
+                temp_categories[category_name].append(item['ticker'])
+
+        for category_tickers in temp_categories.values():
+            tickers_to_plot.update(category_tickers)
+
+        logger.info(f"Identified {len(tickers_to_plot)} unique tickers for equity plot generation.")
+
+    # --- Plot Generation Section ---
     if GENERATE_PLOTS:
-        if all_scores: dist_filename = PLOTS_DIR / f"score_distribution_{RANKING_METRIC}_{datetime.datetime.now().strftime('%Y%m%d')}.png"; plot_score_distribution(all_scores, dist_filename)
-        logger.info(f"Generating equity plots for top {PLOT_TOP_N} stocks...")
-        for i, item in enumerate(ranked_tickers[:PLOT_TOP_N]):
-            ticker = item['ticker']; plot_filename = PLOTS_DIR / f"equity_{ticker}_{datetime.datetime.now().strftime('%Y%m%d')}.png"
-            plot_equity_curves(ticker, item.get('avg_daily_values'), item.get('bh_daily_values'), benchmark_daily_values, plot_filename)
+        logger.info("--- Generating Plots ---")
+        if all_scores:
+            dist_filename = PLOTS_DIR / f"score_distribution_{RANKING_METRIC}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            plot_score_distribution(all_scores, dist_filename)
+        else:
+            logger.warning("No valid scores calculated, cannot generate score distribution plot.")
 
+        # Plot equity curves *only* for the identified tickers
+        if tickers_to_plot:
+            logger.info(f"Generating equity plots for {len(tickers_to_plot)} selected stocks...")
+            plots_generated_count = 0
+            # Iterate through ALL ranked tickers, but only plot if in the set
+            for item in ranked_tickers:
+                ticker = item['ticker']
+                if ticker in tickers_to_plot:
+                    avg_vals = item.get('avg_daily_values')
+                    bh_vals = item.get('bh_daily_values')
+
+                    if avg_vals is None or avg_vals.empty:
+                        logger.warning(f"Skipping equity plot for {ticker}: Average strategy values are missing or empty.")
+                        continue
+
+                    timestamp_str = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                    # Sanitize ticker for filename (replace potential problematic chars like '^')
+                    safe_ticker_name = "".join(c for c in ticker if c.isalnum() or c in ('-', '_', '.'))
+                    plot_filename = PLOTS_DIR / f"equity_{safe_ticker_name}_{timestamp_str}.png" # Use safe name
+
+                    logger.debug(f"Attempting to plot {ticker} to {plot_filename}")
+                    plot_equity_curves(ticker, avg_vals, bh_vals, benchmark_daily_values, plot_filename)
+                    plots_generated_count += 1
+            logger.info(f"Finished generating equity plots (attempted: {len(tickers_to_plot)}, successful: {plots_generated_count}). Check logs.")
+        elif not ranked_tickers:
+             logger.warning("No stocks were ranked, cannot generate equity plots.")
+        else: # tickers_to_plot is empty, likely because TOP_N settings are 0
+            logger.info("No tickers identified for plotting based on TOP_N_OVERALL and TOP_N_PER_CATEGORY settings.")
+    else:
+        logger.info("Plot generation is disabled (RECOMMEND_GENERATE_PLOTS=False).")
+
+    # --- Display Recommendations (Categorize and Print) ---
     logger.info(f"\n--- Stock Recommendations by Price Category (Ranked by: {RANKING_METRIC}) ---")
-    logger.info(f"--- Benchmark ({BENCHMARK_TICKER}): Return={benchmark_metrics.get('total_return_pct', 0.0):.2f}%, MaxDD={benchmark_metrics.get('max_drawdown_pct', 0.0):.2f}%, Sharpe={benchmark_metrics.get('sharpe_ratio', 0.0):.2f} ---")
-    recommendations_by_category = {"Above_1000": [], "100_to_1000": [], "Below_100": []}
-    for item in ranked_tickers:
-        price = item['last_price']; category = "Above_1000" if price > 1000 else ("100_to_1000" if 100 <= price <= 1000 else "Below_100")
-        if len(recommendations_by_category[category]) < TOP_N_PER_CATEGORY: recommendations_by_category[category].append(item)
+    # (Benchmark display line as before)
+    benchmark_display = f"Benchmark ({BENCHMARK_TICKER or 'N/A'}):"
+    if benchmark_metrics: benchmark_display += f" Return={benchmark_metrics.get('total_return_pct', 0.0):.2f}%, MaxDD={benchmark_metrics.get('max_drawdown_pct', 0.0):.2f}%, Sharpe={benchmark_metrics.get('sharpe_ratio', 0.0):.2f}"
+    else: benchmark_display += " (Data unavailable)"
+    logger.info(f"--- {benchmark_display} ---")
 
+    recommendations_by_category = {"Above_1000": [], "100_to_1000": [], "Below_100": []}
+    # Store ranks when creating the category list
+    rank_map = {item['ticker']: i+1 for i, item in enumerate(ranked_tickers)}
+    for item in ranked_tickers:
+        price = item['last_price']
+        category_name = "Above_1000" if price > 1000 else ("100_to_1000" if 100 <= price <= 1000 else "Below_100")
+        if len(recommendations_by_category[category_name]) < TOP_N_PER_CATEGORY:
+            # Add the rank to the item dict when adding to category
+            item_with_rank = item.copy()
+            item_with_rank['rank'] = rank_map.get(item['ticker'], '-')
+            recommendations_by_category[category_name].append(item_with_rank)
+
+    # Format headers for display table
     header1 = f"{'Rank':<5} {'Ticker':<12} {'Price':>9} {'Score':>10} | {'Avg Strat':^45} | {'Buy & Hold':^30} | {'Consistency':^36}"
     header2 = f"{'':<5} {'':<12} {'':>9} {'':>10} | {'Return%':>9} {'MaxDD%':>9} {'Sharpe':>8} {'Sortino':>8} {'Calmar':>8} | {'Return%':>9} {'MaxDD%':>9} {'Sharpe':>8} | {'Strat +%':>9} {'StdDev%':>9} {'AvgTrades':>9}"
     separator = "-" * (len(header1) + 5)
+
     for category, items in recommendations_by_category.items():
         print(f"\n\n--- Category: {category.replace('_', ' ')} (Top {TOP_N_PER_CATEGORY}) ---"); print(separator); print(header1); print(header2); print(separator)
         if not items: print(f"No stocks found.")
         else:
-            for i, item in enumerate(items, 1):
-                 print(f"{i:<5} {item['ticker']:<12} {item['last_price']:>9.2f} {item['score']:>10.2f} | " f"{item['avg_strat_return_pct']:>9.2f} {item['avg_strat_max_drawdown_pct']:>9.2f} {item['avg_strat_sharpe']:>8.2f} {item['avg_strat_sortino']:>8.2f} {item['avg_strat_calmar']:>8.2f} | " f"{item['bh_return_pct']:>9.2f} {item['bh_max_drawdown_pct']:>9.2f} {item['bh_sharpe']:>8.2f} | " f"{item['positive_strat_ratio']:>8.1%} {item['pl_std_dev']:>9.2f} {item['avg_trades_per_strat']:>9.1f}")
+            for item in items: # items now already contain the rank
+                 print(f"{item['rank']:<5} {item['ticker']:<12} {item['last_price']:>9.2f} {item['score']:>10.2f} | "
+                      f"{item['avg_strat_return_pct']:>9.2f} {item['avg_strat_max_drawdown_pct']:>9.2f} {item['avg_strat_sharpe']:>8.2f} {item['avg_strat_sortino']:>8.2f} {item['avg_strat_calmar']:>8.2f} | "
+                      f"{item['bh_return_pct']:>9.2f} {item['bh_max_drawdown_pct']:>9.2f} {item['bh_sharpe']:>8.2f} | "
+                      f"{item['positive_strat_ratio']:>8.1%} {item['pl_std_dev']:>9.2f} {item['avg_trades_per_strat']:>9.1f}")
                  top_strats_str = ", ".join([f"{s[0].replace('_strategy','')} ({s[1]:.1f}%)" for s in item['top_strategies']]); worst_strats_str = ", ".join([f"{s[0].replace('_strategy','')} ({s[1]:.1f}%)" for s in item['worst_strategies']])
                  print(f"{'':<5} {' ': <12} {' ':>9} {' ':>10} |   Top Strats : {top_strats_str}"); print(f"{'':<5} {' ': <12} {' ':>9} {' ':>10} |   Worst Strats: {worst_strats_str}")
         print(separator)
 
-    logger.info("\n--- Recommendation Justification & Expectations ---"); logger.warning("!! Using strategies from MODIFIED file: {} !!".format(STRATEGIES_DIR / (STRATEGY_MODULE_NAME + '.py'))); logger.info(f"Ranking Metric: '{RANKING_METRIC}' across {len(STRATEGIES_TO_TEST)} strategies tested ({START_DATE} to {END_DATE})."); logger.info(f"Simulation Costs: Commission={COMMISSION_PCT*100:.3f}%, Slippage={SLIPPAGE_PCT*100:.3f}% per trade."); logger.info("Categorized by price on simulation end date."); logger.info("Metrics shown are averages across successful strategy simulations per stock."); logger.info(f"B&H = Buy and Hold performance for the stock itself."); logger.info(f"Benchmark = {BENCHMARK_TICKER} (Return: {benchmark_metrics.get('total_return_pct', 0.0):.2f}%)"); logger.warning("\n**DISCLAIMER:** Historical backtest simulation. Past performance NOT indicative of future results. This is NOT financial advice. Use results for research ONLY.**")
+    # --- Disclaimer (Keep as is) ---
+    logger.info("\n--- Recommendation Justification & Expectations ---")
+    logger.warning("!! Using strategies from MODIFIED file: {} !!".format(STRATEGIES_DIR / (STRATEGY_MODULE_NAME + '.py')))
+    logger.info(f"Ranking Metric: '{RANKING_METRIC}' across {len(STRATEGIES_TO_TEST)} strategies tested ({START_DATE} to {END_DATE}).")
+    logger.info(f"Simulation Costs: Commission={COMMISSION_PCT*100:.3f}%, Slippage={SLIPPAGE_PCT*100:.3f}% per trade.")
+    logger.info("Categorized by price on simulation end date.")
+    logger.info("Metrics shown are averages across successful strategy simulations per stock.")
+    logger.info(f"B&H = Buy and Hold performance for the stock itself.")
+    logger.info(f"Benchmark = {BENCHMARK_TICKER or 'N/A'} ({benchmark_display.split(':')[-1].strip() if benchmark_metrics else 'Data unavailable'})")
+    logger.warning("\n**DISCLAIMER:** Historical backtest simulation. Past performance NOT indicative of future results. This is NOT financial advice. Use results for research ONLY.**")
+
+    for i, item in enumerate(ranked_tickers):
+        item['rank'] = i + 1
+
     return ranked_tickers
 
-
-# --- Function to Save Results --- (Same as previous version)
+# --- Function to Save Results ---
 def save_recommendations_to_csv(ranked_data, filename="stock_recommendations.csv"):
     if not ranked_data: logger.warning("No ranked data to save."); return
     filepath = RESULTS_DIR / filename
     try:
         flat_data = []
         for item in ranked_data:
-            flat_item = item.copy(); flat_item['top_strategies'] = ", ".join([f"{s[0]}:{s[1]:.2f}" for s in item.get('top_strategies', [])]); flat_item['worst_strategies'] = ", ".join([f"{s[0]}:{s[1]:.2f}" for s in item.get('worst_strategies', [])])
-            flat_item.pop('avg_daily_values', None); flat_item.pop('bh_daily_values', None); flat_data.append(flat_item)
+            flat_item = item.copy()
+            # Add rank if not already present (should be added in analyze_and_recommend now)
+            if 'rank' not in flat_item:
+                logger.warning(f"Rank missing for {flat_item.get('ticker','Unknown')} during CSV save.")
+                flat_item['rank'] = '-' # Placeholder
+            flat_item['top_strategies'] = ", ".join([f"{s[0]}:{s[1]:.2f}" for s in item.get('top_strategies', [])])
+            flat_item['worst_strategies'] = ", ".join([f"{s[0]}:{s[1]:.2f}" for s in item.get('worst_strategies', [])])
+            flat_item.pop('avg_daily_values', None); flat_item.pop('bh_daily_values', None)
+            flat_data.append(flat_item)
+
         if not flat_data: logger.warning("No data left after flattening for CSV."); return
-        keys = flat_data[0].keys()
+
+        # Ensure 'rank' is the first column if present
+        keys = list(flat_data[0].keys())
+        if 'rank' in keys:
+             keys.insert(0, keys.pop(keys.index('rank')))
+
         with open(filepath, 'w', newline='', encoding='utf-8') as output_file:
-            dict_writer = csv.DictWriter(output_file, fieldnames=keys); dict_writer.writeheader(); dict_writer.writerows(flat_data)
+            dict_writer = csv.DictWriter(output_file, fieldnames=keys)
+            dict_writer.writeheader()
+            dict_writer.writerows(flat_data)
         logger.info(f"Recommendations saved successfully to {filepath}")
     except Exception as e: logger.error(f"Failed to save recommendations to CSV: {e}", exc_info=True)
-
 
 # --- Main Execution ---
 if __name__ == "__main__":
@@ -654,6 +899,7 @@ if __name__ == "__main__":
     logger.info(f"Strategies Source: {STRATEGIES_DIR / (STRATEGY_MODULE_NAME + '.py')}")
     logger.info(f"Strategies Count: {len(STRATEGIES_TO_TEST)}")
     logger.info(f"Ranking Metric: {RANKING_METRIC}")
+    logger.info(f"Plot Generation Enabled: {GENERATE_PLOTS}, Top N Plots: {PLOT_TOP_N}") # Added plot info
     logger.info(f"Simulation Cache Enabled: {USE_SIMULATION_CACHE}")
     logger.info(f"Using {NUM_CPUS} CPU cores for parallel simulation.")
     script_start_time = datetime.datetime.now()
@@ -672,17 +918,33 @@ if __name__ == "__main__":
         simulation_results = run_simulation_parallel_cached(all_stock_data, STRATEGIES_TO_TEST, yf_cache_info)
 
         if simulation_results:
+            # --- Analysis, Recommendation & Plotting ---
+            # The analyze_and_recommend function now handles plotting internally if enabled
             full_ranked_list = analyze_and_recommend(simulation_results, buy_hold_results, benchmark_data)
+
+            # --- Save CSV Results (Keep as is) ---
             if full_ranked_list:
                  timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                  csv_filename = f"recommendations_v2merged_{RANKING_METRIC}_{timestamp}.csv"
                  save_recommendations_to_csv(full_ranked_list, filename=csv_filename)
-        else: logger.error("Strategy simulation produced no results. Check logs for errors.")
-    else: logger.error("Failed to fetch sufficient stock data. Aborting simulation.")
+            else:
+                logger.warning("Analysis returned no ranked stocks. CSV file not saved.")
+        else:
+            logger.error("Strategy simulation produced no results. Check logs for errors.")
+    else:
+        logger.error("Failed to fetch sufficient stock data. Aborting simulation.")
 
+    # --- Final Logging ---
     script_end_time = datetime.datetime.now()
     logger.info(f"Full backtest, analysis, and recommendation finished in {script_end_time - script_start_time}")
     logger.info(f"Log file saved to: {log_file_path}")
-    if GENERATE_PLOTS: logger.info(f"Plots saved in: {PLOTS_DIR}")
-    if USE_SIMULATION_CACHE: logger.info(f"Simulation cache stored in: {SIM_CACHE_DIR}")
-    logger.info(f"CSV results saved in: {RESULTS_DIR}")
+    # Updated plot log message
+    if GENERATE_PLOTS:
+        # We don't have `tickers_to_plot` here, but we know the config
+        # Just confirm the directory exists and plots *should* be there if generated
+        if PLOTS_DIR.exists():
+             logger.info(f"Equity plots saved in: {PLOTS_DIR.resolve()} (Targeted stocks based on TOP_N_OVERALL/TOP_N_PER_CATEGORY)")
+        else:
+             logger.warning(f"Plot generation was enabled, but plot directory not found: {PLOTS_DIR.resolve()}")
+    if USE_SIMULATION_CACHE: logger.info(f"Simulation cache stored in: {SIM_CACHE_DIR.resolve()}")
+    logger.info(f"CSV results saved in: {RESULTS_DIR.resolve()}")

@@ -64,7 +64,7 @@ RESULTS_DIR = Path("./recommendation_results")
 PLOTS_DIR = RESULTS_DIR / "plots" # Define plot directory relative to results
 DOCS_DIR = Path("./docs") # Output directory for the dashboard
 TEMPLATE_FILE = "dashboard_template.html" # Template filename
-OUTPUT_HTML_FILE = DOCS_DIR / "recommendation_dashboard.html"
+OUTPUT_HTML_FILE = DOCS_DIR / "index.html"
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -177,29 +177,66 @@ def format_dataframe_for_template(df):
     return df
 
 # --- Performance Calculation (for Benchmark) ---
-def calculate_simple_performance(daily_values: pd.Series):
+def calculate_simple_performance(daily_values: pd.Series | None): # Allow None input
     """Calculates basic return, drawdown, and approximate Sharpe."""
-    if daily_values.empty or daily_values.isnull().all():
+    # --- More Robust Input Check ---
+    if daily_values is None:
+        logger.debug("calculate_simple_performance received None.")
         return {'total_return_pct': 0.0, 'max_drawdown_pct': 0.0, 'sharpe_ratio': 0.0}
+    if not isinstance(daily_values, pd.Series):
+        logger.warning(f"calculate_simple_performance received non-Series input (type: {type(daily_values)}).")
+        return {'total_return_pct': 0.0, 'max_drawdown_pct': 0.0, 'sharpe_ratio': 0.0}
+    if daily_values.empty:
+        logger.debug("calculate_simple_performance received an empty Series.")
+        return {'total_return_pct': 0.0, 'max_drawdown_pct': 0.0, 'sharpe_ratio': 0.0}
+    # Check for all NaNs *after* ensuring it's not empty
+    if daily_values.isnull().all():
+        logger.debug("calculate_simple_performance received a Series with all NaNs.")
+        return {'total_return_pct': 0.0, 'max_drawdown_pct': 0.0, 'sharpe_ratio': 0.0}
+    # --- End Robust Check ---
 
-    daily_values = daily_values.dropna()
+    # Proceed with calculation only if checks pass
+    daily_values = daily_values.dropna() # Drop NaNs again just in case
     if len(daily_values) < 2:
+         logger.debug("calculate_simple_performance has < 2 valid data points after dropna.")
          return {'total_return_pct': 0.0, 'max_drawdown_pct': 0.0, 'sharpe_ratio': 0.0}
 
-    total_return = (daily_values.iloc[-1] / daily_values.iloc[0]) - 1
+    # Ensure the first value used for return calculation is non-zero
+    if daily_values.iloc[0] == 0:
+        logger.warning("First value in daily_values is zero, cannot calculate total return percentage accurately.")
+        total_return = 0.0 # Avoid division by zero
+    else:
+        total_return = (daily_values.iloc[-1] / daily_values.iloc[0]) - 1
+
     cumulative_max = daily_values.cummax()
-    drawdown = (daily_values - cumulative_max) / cumulative_max
+    drawdown = (daily_values - cumulative_max) / cumulative_max.replace(0, np.nan) # Avoid division by zero in drawdown calc too
     max_drawdown = drawdown.min() if not drawdown.empty else 0.0
+    # Ensure max_drawdown is finite
+    max_drawdown = max_drawdown if np.isfinite(max_drawdown) else 0.0
 
     # Approximate Annualized Sharpe (using daily returns, assuming 0 risk-free rate)
     daily_returns = daily_values.pct_change().dropna()
     sharpe_ratio = 0.0
-    if not daily_returns.empty and daily_returns.std() > 1e-9: # Avoid division by zero
-        sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252) # Annualize
+    # Check std dev is positive and finite before calculating Sharpe
+    std_dev = daily_returns.std()
 
-    return {'total_return_pct': total_return * 100,
-            'max_drawdown_pct': abs(max_drawdown * 100),
-            'sharpe_ratio': sharpe_ratio
+    if not daily_returns.empty and np.isfinite(std_dev) and std_dev > 1e-9:
+        mean_return = daily_returns.mean()
+        if np.isfinite(mean_return): # Check mean is finite
+             sharpe_ratio = (mean_return / std_dev) * np.sqrt(252) # Annualize
+        else:
+             logger.warning("Mean daily return is non-finite, Sharpe set to 0.")
+    elif not daily_returns.empty:
+         logger.warning(f"Std dev of daily returns is zero or non-finite ({std_dev}), Sharpe set to 0.")
+
+    # Ensure final metrics are finite
+    final_return = total_return * 100 if np.isfinite(total_return) else 0.0
+    final_drawdown = abs(max_drawdown * 100) if np.isfinite(max_drawdown) else 0.0
+    final_sharpe = sharpe_ratio if np.isfinite(sharpe_ratio) else 0.0
+
+    return {'total_return_pct': final_return,
+            'max_drawdown_pct': final_drawdown,
+            'sharpe_ratio': final_sharpe
             }
 
 # --- Benchmark Data Fetching ---
@@ -210,7 +247,6 @@ def get_benchmark_performance(ticker, start_date, end_date):
         return None
     try:
         logger.info(f"Fetching benchmark data for {ticker} ({start_date} to {end_date})...")
-        # Fetch slightly wider range to ensure start/end are covered
         fetch_start = (pd.to_datetime(start_date) - pd.Timedelta(days=5)).strftime('%Y-%m-%d')
         fetch_end = (pd.to_datetime(end_date) + pd.Timedelta(days=5)).strftime('%Y-%m-%d')
         data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False, auto_adjust=True)
@@ -219,20 +255,28 @@ def get_benchmark_performance(ticker, start_date, end_date):
             logger.warning(f"No benchmark data found for {ticker} in range {fetch_start} to {fetch_end}.")
             return None
 
-        # Filter exact date range
+        data.index = pd.to_datetime(data.index) # Ensure index is datetime
         data = data[(data.index >= pd.to_datetime(start_date)) & (data.index <= pd.to_datetime(end_date))]
         if data.empty:
-            logger.warning(f"No benchmark data found for {ticker} within the exact simulation period {start_date} to {end_date}.")
+            logger.warning(f"No benchmark data for {ticker} within exact simulation period {start_date} to {end_date}.")
             return None
 
-        # Ensure 'Close' column exists
         col_name = 'Close' if 'Close' in data.columns else 'close' if 'close' in data.columns else None
         if not col_name:
              logger.warning(f"'Close' column not found in benchmark data for {ticker}.")
              return None
 
+        benchmark_series = data[col_name]
+
+        # --- Add Check: Ensure it's a Series ---
+        if not isinstance(benchmark_series, pd.Series):
+            logger.error(f"Extracted benchmark data for {ticker} is not a pandas Series (type: {type(benchmark_series)}). Cannot calculate performance.")
+            return None
+        # --- End Check ---
+
         logger.info(f"Calculating benchmark performance for {ticker}...")
-        return calculate_simple_performance(data[col_name])
+        return calculate_simple_performance(benchmark_series) # Pass the Series
+
     except Exception as e:
         logger.error(f"Error fetching or processing benchmark {ticker}: {e}", exc_info=True)
         return None
@@ -264,27 +308,52 @@ def create_risk_return_scatter(df, top_n=20):
     """Generates Plotly scatter plot for risk vs return."""
     if df.empty or 'avg_strat_return_pct' not in df.columns or 'avg_strat_max_drawdown_pct' not in df.columns: return None
 
+    # Check for last_price needed for color coding
+    use_color = True
+    if 'last_price' not in df.columns:
+        logger.warning("Cannot create risk-return scatter with color: 'last_price' column missing.")
+        use_color = False
+        # We'll still proceed but without the color dimension
+
     top_df = df.head(top_n).copy() # Use copy to avoid SettingWithCopyWarning
 
-    # Add price category for color coding
-    def get_category(price):
-        if price > 1000: return "Above 1000"
-        if price >= 100: return "100 to 1000"
-        return "Below 100"
-    top_df['price_category'] = top_df['last_price'].apply(get_category)
+    hover_data_cols = ['ticker', 'score', 'avg_strat_sharpe']
+    if 'last_price' in top_df.columns:
+         hover_data_cols.append('last_price') # Add price to hover if available
 
-    fig = px.scatter(top_df,
-                     x='avg_strat_max_drawdown_pct',
-                     y='avg_strat_return_pct',
-                     text='ticker',
-                     color='price_category',
-                     hover_data=['ticker', 'last_price', 'score', 'avg_strat_sharpe'],
-                     title=f"Risk (Avg Strategy Max DD %) vs. Return (Avg Strategy %) for Top {top_n} Stocks",
-                     labels={'avg_strat_max_drawdown_pct': 'Avg Strategy Max Drawdown (%)',
-                             'avg_strat_return_pct': 'Avg Strategy Return (%)',
-                             'price_category': 'Price Category'})
+    plot_args = {
+        "data_frame": top_df, # Pass the actual DataFrame
+        "x": 'avg_strat_max_drawdown_pct',
+        "y": 'avg_strat_return_pct',
+        "text": 'ticker',
+        "hover_data": hover_data_cols,
+        "title": f"Risk (Avg Strategy Max DD %) vs. Return (Avg Strategy %) for Top {top_n} Stocks",
+        "labels": {
+            'avg_strat_max_drawdown_pct': 'Avg Strategy Max Drawdown (%)',
+            'avg_strat_return_pct': 'Avg Strategy Return (%)'
+        }
+    }
+
+    # Add color only if the necessary column exists
+    if use_color:
+        def get_category(price):
+            if pd.isna(price): return "Unknown" # Handle potential NaNs
+            if price > 1000: return "Above 1000"
+            if price >= 100: return "100 to 1000"
+            return "Below 100"
+        top_df['price_category'] = top_df['last_price'].apply(get_category)
+        plot_args["color"] = 'price_category'
+        plot_args["labels"]['price_category'] = 'Price Category'
+
+
+    # **** THE FIX IS HERE: Replace the ellipsis with the actual function call ****
+    # fig = px.scatter(...) # <--- This was the problem
+    fig = px.scatter(**plot_args) # <--- Use the arguments defined above
+
     fig.update_traces(textposition='top center')
-    fig.update_layout(title_x=0.5, legend_title_text='Price Category')
+    fig.update_layout(title_x=0.5)
+    if use_color: # Only add legend title if color was used
+        fig.update_layout(legend_title_text='Price Category')
     fig.add_hline(y=0, line_dash="dot", line_color="grey")
     return pio.to_html(fig, full_html=False, include_plotlyjs='cdn')
 
@@ -292,19 +361,17 @@ def create_risk_return_scatter(df, top_n=20):
 def find_and_encode_equity_plot(ticker: str, plots_dir: Path) -> str | None:
     """Finds the latest equity plot PNG for a ticker and encodes it as base64."""
     try:
-        if not plots_dir.is_dir():
-            # logger.debug(f"Plots directory not found: {plots_dir}")
-            return None
+        if not plots_dir.is_dir(): return None
 
-        # Find the most recent plot for this ticker
+        # Sanitize ticker name for matching filenames (same as in recommend_v2.py)
+        safe_ticker_name = "".join(c for c in ticker if c.isalnum() or c in ('-', '_', '.'))
         latest_plot = None
         latest_time = 0
-        # Pattern: equity_<ticker>_<timestamp>.png
-        plot_pattern = f"equity_{ticker}_*.png"
+        plot_pattern = f"equity_{safe_ticker_name}_*.png" # Use safe name in pattern
 
         found_plots = list(plots_dir.glob(plot_pattern))
         if not found_plots:
-             # logger.debug(f"No plot found for ticker {ticker} with pattern {plot_pattern} in {plots_dir}")
+             logger.debug(f"No plot found for ticker {ticker} (safe: {safe_ticker_name}) with pattern {plot_pattern} in {plots_dir}")
              return None
 
         for plot_file in found_plots:
@@ -313,22 +380,18 @@ def find_and_encode_equity_plot(ticker: str, plots_dir: Path) -> str | None:
                 if mod_time > latest_time:
                     latest_time = mod_time
                     latest_plot = plot_file
-            except FileNotFoundError:
-                 continue # File might have been deleted between glob and stat
+            except FileNotFoundError: continue
 
         if latest_plot:
-            # logger.debug(f"Found plot: {latest_plot}")
             with open(latest_plot, "rb") as image_file:
                 encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
             return f"data:image/png;base64,{encoded_string}"
         else:
-            # logger.debug(f"No plot file ultimately selected for {ticker}")
             return None
 
     except Exception as e:
         logger.error(f"Error finding/encoding plot for {ticker}: {e}", exc_info=True)
         return None
-
 
 # --- Main Script ---
 if __name__ == "__main__":
@@ -380,42 +443,55 @@ if __name__ == "__main__":
         if 'strategy_count' in df.columns and not df['strategy_count'].empty:
             strategies_count_from_data = df['strategy_count'].iloc[0]
 
+        # --- Determine which tickers need plots (Same logic as recommend_v2) ---
+        tickers_needing_plots = set()
+        # Add overall top N
+        for i, row in df.head(TOP_N_OVERALL).iterrows():
+             tickers_needing_plots.add(row['ticker'])
+        # Add category top N
+        temp_categories_report = {"Above 1000": [], "100 to 1000": [], "Below 100": []}
+        for i, row in df.iterrows():
+             price = row['last_price']
+             category_name = "Above 1000" if price > 1000 else ("100 to 1000" if 100 <= price <= 1000 else "Below 100")
+             if len(temp_categories_report[category_name]) < TOP_N_PER_CATEGORY:
+                 temp_categories_report[category_name].append(row['ticker'])
+        for category_tickers in temp_categories_report.values():
+            tickers_needing_plots.update(category_tickers)
+        logger.info(f"{len(tickers_needing_plots)} unique tickers identified for displaying plots in the report.")
+        # --- End plot target identification ---
+
         logger.info(f"Processing {total_stocks_analyzed} stocks for dashboard...")
         processed_count = 0
         plot_found_count = 0
         for i, row in df.iterrows():
             row_dict = row.to_dict()
             row_dict['rank'] = i + 1
-
             ticker = row_dict['ticker']
 
-            # Find and encode equity plot only for the top N stocks
-            if i < PLOT_TOP_N:
+            # --- Find plot ONLY if ticker is in the required set ---
+            if ticker in tickers_needing_plots:
                 row_dict['equity_plot_base64'] = find_and_encode_equity_plot(ticker, PLOTS_DIR)
                 if row_dict['equity_plot_base64']:
                     plot_found_count += 1
             else:
-                 row_dict['equity_plot_base64'] = None # Don't bother searching for plots beyond PLOT_TOP_N
+                 row_dict['equity_plot_base64'] = None # No plot needed/expected for this one
+            # --- End plot finding ---
 
             # Add to overall top N list
             if i < TOP_N_OVERALL:
                 overall_top_stocks_list.append(row_dict)
 
             # Add to category lists
+            # ... (category assignment logic as before) ...
             price = row_dict['last_price']
             if price > 1000: category_name = "Above 1000"
             elif 100 <= price <= 1000: category_name = "100 to 1000"
             else: category_name = "Below 100"
-
             if len(categories_data[category_name]) < TOP_N_PER_CATEGORY:
-                categories_data[category_name].append(row_dict)
+                 categories_data[category_name].append(row_dict)
 
-            processed_count += 1
-            # if processed_count % 50 == 0: # Optional progress update
-            #     logger.info(f"Processed {processed_count}/{total_stocks_analyzed} stocks...")
 
-        logger.info(f"Finished processing stocks. Found plots for {plot_found_count}/{min(PLOT_TOP_N, total_stocks_analyzed)} expected top stocks.")
-
+        logger.info(f"Finished processing stocks. Found plots for {plot_found_count}/{len(tickers_needing_plots)} targeted stocks.")
 
     # --- Generate Charts from Processed Data ---
     logger.info("Generating Plotly charts...")

@@ -29,3 +29,4 @@ RECOMMEND_GENERATE_PLOTS = True # Set to False to disable plot generation
 RECOMMEND_PLOT_TOP_N = 5 # How many top stocks to generate equity curve plots for
 RECOMMEND_STRATEGY_DETAIL_COUNT = 3 # How many top/worst strategies to show per stock
 RECOMMEND_MIN_AVG_TRADES = 0.5 # Optional: Filter out stocks where strategies generated very few trades on average
+TOP_N_OVERALL = 10 # Number of top stocks to recommend overall
